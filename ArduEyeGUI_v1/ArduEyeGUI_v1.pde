@@ -65,6 +65,10 @@ int string_length=0;         //length of string buffer
 int line_width=40;           //number of chars per line of text
 int num_lines=25;            //number of lines of text
 
+//Record to file variables
+PrintWriter file;
+int record=0;
+
 //***********************************************************
 //Display Variables
 PFont myFont;              //The display font:
@@ -173,6 +177,12 @@ void draw() {
 
 //  if ((vector_x!=0) || (vector_y!=0))  //if non-zero, display vector
     line(550, 250, 550+vector_x, 250+vector_y);
+    
+   if(record==1)  //indicate that we are recording
+    {
+      fill(255,0,0); 
+      text("Recording... ", 360, 70);
+    } 
 }
 
 //***********************************************************
@@ -257,6 +267,7 @@ void processPacket(byte[] packet, int packet_length)
   int minimum=4096;     //min pixel
   int maximum=-4096;    //max pixel
   float mult_factor=0;  //scale factor
+  float range=0;
   int ctr=0;            //counter
   
   switch(packet[0])  //switch of packet ID
@@ -270,28 +281,54 @@ void processPacket(byte[] packet, int packet_length)
     
       img.loadPixels();  //load pixel array
       
-      int[] pix1=new int[img.pixels.length];  //create integer array
-    
+      int[] pix1=new int[256];  //create integer array
+      short low=0;
+      short high=0;
+      println(packet_length);
+      println(packet[0]);
+      println(packet[1]);
+      println(packet[2]);
+      println(packet[3]);
+      println(packet[4]);
       //each pixel is two bytes, form integer from then
-      for (int i = 3; i < img.pixels.length*2+2; i+=2) 
+      for (int i = 3; i < ((256*2)+2); i+=2) 
       {
-        pix1[ctr]=(int)((data[i])<<8)+data[i+1];  //combine to get pixel
+        low = (short)(packet[i] & 0xff);    //low byte
+        high = (short)(packet[i+1] & 0xff);  //high byte
+        pix1[ctr]=(short) ((high << 8) | low) ;  //combine to get pixel
         if(pix1[ctr]>maximum) maximum=pix1[ctr];  //find max
         if(pix1[ctr]<minimum) minimum=pix1[ctr];  //find min
         ctr++;
       }
    
       //mult_factor maps pixel values onto 0->255
-      mult_factor=255/abs((float)maximum-(float)minimum);
+      range=abs((float)maximum-(float)minimum);
+      if((maximum>0)&&(minimum<=0))
+       range++;
+      if((maximum<0)&&(minimum>=0))
+       range++;
+      mult_factor=255/range;
       
       //set image pixels based on data
       for (int i = 0; i < img.pixels.length; i++) 
          //img.pixels[i] = color((255-(int)((pix1[i]-minimum)*mult_factor)));
          img.pixels[i] = color(((int)((pix1[i]-minimum)*mult_factor)));
          
-      img.updatePixels();  //update pixels
-      break;
-      
+      //recording image
+      if(record==1)
+        {
+          //print pixel values to file
+          for(int i=0;i<img.pixels.length;i++)
+          {
+             file.print(Integer.toString(pix1[i])+" ");
+          } 
+          file.println();
+          
+        }
+        
+       img.updatePixels();  //update pixels
+       break;
+     
   case pixel_data:  //if points data received
   
     //create image based on [rows] [cols], bytes 2 and 3
@@ -319,7 +356,6 @@ void processPacket(byte[] packet, int packet_length)
   }
 }
 
-
 //***********************************************************
 //controlEvent- triggers when dropdown is selected
 void controlEvent(ControlEvent theEvent) {
@@ -335,10 +371,31 @@ void controlEvent(ControlEvent theEvent) {
 //serial_out- triggers whenever text is entered in textfield
 public void serial_out(String theText) {
   
+  String[] words = split(theText, ' ');
+  
   // receiving text from textfield
   if (theText.equals("clr"))  //if clear command
   {
     text_log.clear();  //clear text_log
+  }
+  else if ((words.length==3)&&(words[0].equals("record")))  //if record plus two other words
+  {
+    if(words[1].equals("image"))  //if recording image
+    {
+      file=createWriter(words[2]);  //open file name of third word
+      record=1;  //we are recording
+      text_log.add("recording image to file: "+words[2]); 
+    }
+  }
+  else if(theText.equals("stop")||(theText.equals("stop record")))  //stop recording
+  {
+    if(record==1)
+    {
+      file.flush();  //flush file
+      file.close();  //close file
+      record=0;      //stop record
+      text_log.add("finished recording to file"); 
+    }  
   }
   else  
   {
