@@ -108,10 +108,6 @@ void setup() {
   
   myFont = loadFont("Verdana-7.vlw");  //load font
   textFont(myFont, 12);  //set font
- 
-  //automatically connect to first serial port
-  myPort = new Serial(this, Serial.list()[default_port], baud_rate);
-  myPort.buffer(0);  //interrupt on every byte
 
   //text_log contains serial log display strings
   text_log=new ArrayList();
@@ -281,17 +277,12 @@ void processPacket(byte[] packet, int packet_length)
     
       img.loadPixels();  //load pixel array
       
-      int[] pix1=new int[256];  //create integer array
+      int[] pix1=new int[(packet[1]*packet[2])];  //create integer array
       short low=0;
       short high=0;
-      println(packet_length);
-      println(packet[0]);
-      println(packet[1]);
-      println(packet[2]);
-      println(packet[3]);
-      println(packet[4]);
+      
       //each pixel is two bytes, form integer from then
-      for (int i = 3; i < ((256*2)+2); i+=2) 
+      for (int i = 3; i < ((img.pixels.length*2)+2); i+=2) 
       {
         low = (short)(packet[i] & 0xff);    //low byte
         high = (short)(packet[i+1] & 0xff);  //high byte
@@ -307,7 +298,9 @@ void processPacket(byte[] packet, int packet_length)
        range++;
       if((maximum<0)&&(minimum>=0))
        range++;
+      if(range!=0)
       mult_factor=255/range;
+      else range=1;
       
       //set image pixels based on data
       for (int i = 0; i < img.pixels.length; i++) 
