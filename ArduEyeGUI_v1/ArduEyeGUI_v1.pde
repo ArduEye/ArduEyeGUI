@@ -4,7 +4,10 @@ arduGUI_v1.c
 Basic GUI to read text, images, vectors, and points from ArduEye
 
 Working revision started February 16, 2011
-February 17, 2011: renamed to ArduEyeGUI_v1, escape character changed to 27
+February 17, 2012: renamed to ArduEyeGUI_v1, escape character changed to 27
+March 19, 2012: increased buffer to handle full 112x112 image, added support for
+short vectors and char images, and added recording function for all data types.
+
 */
 /*
 ===============================================================================
@@ -67,7 +70,9 @@ int num_lines=25;            //number of lines of text
 
 //Record to file variables
 PrintWriter file;
-int record=0;
+int record_image=0;
+int record_vectors=0;
+int record_points=0;
 
 //***********************************************************
 //Display Variables
@@ -76,8 +81,10 @@ PFont myFont;              //The display font:
 PImage img;                //main image
 PImage overlay_image;      //overlay image (for highlighting points,etc.)
 
-int vector_x=0;            //x display vector
-int vector_y=0;            //y display vector
+final int MAX_VECTORS=64;
+int[] vector_x=new int[64];            //x display vector
+int[] vector_y=new int[64];            //y display vector
+int vector_rows=0,vector_cols=0;
 
 //***********************************************************
 //COMM Variables
@@ -88,8 +95,11 @@ final int end_packet=2;      //END PACKET
 final int image_data=2;      //IMAGE DATA
 final int pixel_data=4;      //PIXEL DATA
 final int vector_data=6;     //VECTOR DATA
+final int image_char_data=8;  //CHAR IMAGE DATA
+final int vector_short_data=10; //SHORT VECTOR DATA
 
-byte[] data=new byte[4096];  //packet buffer
+final int MAX_SIZE=25100;  //big enough to handle 112x112 image + header
+byte[] data=new byte[MAX_SIZE];  //packet buffer
 int data_index=0;            //buffer index
 
 int store_byte=0;            //whether to store byte in buffer
@@ -152,12 +162,16 @@ void setup() {
   //initialize image and overlay_image
   img = createImage(16, 16, ALPHA);
   overlay_image = createImage(16, 16, ARGB);
+  
+  rectMode(CORNERS);
 }
 
 
 //***********************************************************
 //Draw Function
 void draw() {
+  
+  int vector_row_div,vector_col_div;
   
   background(0);              //set background color
   stroke(color(255, 0, 0));   //set draw color
@@ -171,14 +185,44 @@ void draw() {
   for(int i=0;i<text_log.size();i++)  //display text_log strings
     text((String)text_log.get(i),10,100+i*15);
 
-//  if ((vector_x!=0) || (vector_y!=0))  //if non-zero, display vector
-    line(550, 250, 550+vector_x, 250+vector_y);
+
+  //display vectors
+  int ctr=0;
+  
+  int maxi=0,max_index=0;
+  for(int r=0;r<vector_rows;r++)    //for each division
+      for(int c=0;c<vector_cols;c++)
+        if(abs(vector_y[c])>maxi)
+          {
+            max_index=c;
+            maxi=abs(vector_y[c]);
+          }
+  
+  if((vector_rows>0)&&(vector_cols>0))  //if there are vectors to display
+  {
+    vector_row_div=400/vector_rows;  //evenly space vectors over image
+    vector_col_div=400/vector_cols;
     
-   if(record==1)  //indicate that we are recording
-    {
-      fill(255,0,0); 
-      text("Recording... ", 360, 70);
-    } 
+   
+    for(int r=0;r<vector_rows;r++)    //for each division
+      for(int c=0;c<vector_cols;c++)
+        {
+           stroke(color(0, 255, 0));
+           strokeWeight(4);
+          
+            //plot vector
+            line(350+c*vector_col_div+vector_col_div/2, 50+r*vector_row_div+vector_row_div/2, 350+c*vector_col_div+vector_col_div/2+vector_x[ctr], 50+r*vector_row_div+vector_row_div/2-vector_y[ctr]); 
+            //rect(350+c*vector_col_div+vector_col_div/2, 50+r*vector_row_div+vector_row_div/2, 360+c*vector_col_div+vector_col_div/2+vector_x[ctr]/10, 55+r*vector_row_div+vector_row_div/2+vector_y[ctr]/*/2*/);
+            ctr++;  
+      }
+  }
+    
+    
+ if((record_image==1)||(record_points==1)||(record_vectors==1))  //indicate that we are recording
+  {
+    fill(255,0,0); 
+    text("Recording... ", 360, 70);  //display recording indicator
+  } 
 }
 
 //***********************************************************
@@ -233,8 +277,12 @@ void serialEvent(Serial p) {
     {
       if (in_packet==1)  //if we're in a packet
       {
+        if(data_index<MAX_SIZE)
+        {
         data[data_index]=(byte)new_byte;  //store in packet buffer
         data_index++;  //increase packet size
+        }
+        else in_packet=0;
       }
       else   //if the data isn't in packet, assume its text 
       {
@@ -262,25 +310,31 @@ void processPacket(byte[] packet, int packet_length)
 {
   int minimum=4096;     //min pixel
   int maximum=-4096;    //max pixel
+  byte minimum2=127;     //min pixel
+  byte maximum2=-128;    //max pixel
   float mult_factor=0;  //scale factor
   float range=0;
   int ctr=0;            //counter
+  int[] pix1;
+  byte[] pix2;
+  short low=0;          //upper and lower bytes
+  short high=0;
   
   switch(packet[0])  //switch of packet ID
   {
   
     case image_data:  //if image packet received
-    
+     
       //create blank image of given size
       // [rows] [cols] are bytes 2 and 3
-      img = createImage(packet[1], packet[2], ALPHA);
+      if((packet[2]>0)&&(packet[1]>0))
+      img = createImage(packet[2], packet[1], ALPHA);
+      else break;
     
       img.loadPixels();  //load pixel array
       
-      int[] pix1=new int[(packet[1]*packet[2])];  //create integer array
-      short low=0;
-      short high=0;
-      
+      pix1=new int[(packet[1]*packet[2])];  //create integer array
+    
       //each pixel is two bytes, form integer from then
       for (int i = 3; i < ((img.pixels.length*2)+2); i+=2) 
       {
@@ -308,7 +362,7 @@ void processPacket(byte[] packet, int packet_length)
          img.pixels[i] = color(((int)((pix1[i]-minimum)*mult_factor)));
          
       //recording image
-      if(record==1)
+      if(record_image==1)
         {
           //print pixel values to file
           for(int i=0;i<img.pixels.length;i++)
@@ -321,11 +375,62 @@ void processPacket(byte[] packet, int packet_length)
         
        img.updatePixels();  //update pixels
        break;
+  case image_char_data:  //if image packet received
+     
+      //create blank image of given size
+      // [rows] [cols] are bytes 2 and 3
+      if((packet[2]>0)&&(packet[1]>0))
+      img = createImage(packet[2], packet[1], ALPHA);
+      else break;
+    
+      img.loadPixels();  //load pixel array
+      
+      pix2=new byte[(packet[1]*packet[2])];  //create integer array
+      
+      //each pixel is two bytes, form integer from then
+      for (int i = 3; i < (img.pixels.length+3); i++) 
+      {
+        
+        pix2[ctr]=(byte)(packet[i] & 0xff);  //combine to get pixel
+        if(pix2[ctr]>maximum2) maximum2=pix2[ctr];  //find max
+        if(pix2[ctr]<minimum2) minimum2=pix2[ctr];  //find min
+        ctr++;
+      }
+   
+      //mult_factor maps pixel values onto 0->255
+      range=abs((float)maximum2-(float)minimum2);
+      if((maximum2>0)&&(minimum2<=0))
+       range++;
+      if((maximum2<0)&&(minimum2>=0))
+       range++;
+      if(range!=0)
+      mult_factor=255/range;
+      else range=1;
+      
+      //set image pixels based on data
+      for (int i = 0; i < img.pixels.length; i++) 
+         //img.pixels[i] = color((255-(int)((pix1[i]-minimum)*mult_factor)));
+         img.pixels[i] = color(((int)((pix2[i]-minimum2)*mult_factor)));
+         
+      //recording image
+      if(record_image==1)
+        {
+          //print pixel values to file
+          for(int i=0;i<img.pixels.length;i++)
+          {
+             file.print(Integer.toString(pix2[i])+" ");
+          } 
+          file.println();
+          
+        }
+        
+       img.updatePixels();  //update pixels
+       break;
      
   case pixel_data:  //if points data received
   
     //create image based on [rows] [cols], bytes 2 and 3
-    overlay_image = createImage(packet[1], packet[2], ARGB);
+    overlay_image = createImage(packet[2], packet[1], ARGB);
     
     overlay_image.loadPixels();  //load pixels
     
@@ -338,11 +443,75 @@ void processPacket(byte[] packet, int packet_length)
       overlay_image.pixels[(packet[i]*packet[1]+packet[i+1])]=color(255, 0, 0);
    
     overlay_image.updatePixels();  //update pixels
+    
+     //recording points
+    if(record_points==1)
+      {
+        //print points values to file
+        for(int i=3;i<packet_length-1;i+=2)
+        {
+           file.print(Integer.toString(packet[i])+" "+Integer.toString(packet[i+1])+" ");
+        } 
+        file.println(";");
+        
+      }
     break;
     
   case vector_data:    //if vector received 
-    vector_x=-packet[3];    //x component of vector
-    vector_y=-packet[4];   //y component of vector
+    vector_rows=packet[1];
+    vector_cols=packet[2];
+    
+    ctr=0;
+    for(int i=3;i<(packet_length-1);i+=2)
+    {
+      
+      vector_x[ctr]=packet[i];    //x component of vector
+      vector_y[ctr]=packet[i+1];   //y component of vector
+      println(vector_x[ctr]+" "+vector_y[ctr]);
+      ctr++;
+    }
+    println();
+    
+     //recording vectors
+    if(record_vectors==1)
+      {
+        //print vector values to file
+        for(int i=0;i<ctr;i++)
+        {
+           file.print(Integer.toString(vector_x[i])+" "+Integer.toString(vector_y[i])+" ");
+        } 
+        file.println(";");
+        
+      }
+    break;
+    
+  case vector_short_data:    //if 2-byte vectors received 
+    vector_rows=packet[1];
+    vector_cols=packet[2];
+    
+   ctr=0;
+    for(int i=3;i<(packet_length-1);i+=4)
+    {
+      low = (short)(packet[i] & 0xff);    //low byte
+      high = (short)(packet[i+1] & 0xff);  //high byte
+      vector_x[ctr]=-(short) ((high << 8) | low) ;   //x component of vector
+      low = (short)(packet[i+2] & 0xff);    //low byte
+      high = (short)(packet[i+3] & 0xff);  //high byte
+      vector_y[ctr]=-(short) ((high << 8) | low) ;   //x component of vector
+      ctr++;
+    }
+    
+     //recording points
+    if(record_vectors==1)
+      {
+        //print vector values to file
+        for(int i=0;i<ctr;i++)
+        {
+           file.print(Integer.toString(vector_x[i])+" "+Integer.toString(vector_y[i])+" ");
+        } 
+        file.println(";");
+        
+      }
     break;
     
   default:break;
@@ -371,22 +540,36 @@ public void serial_out(String theText) {
   {
     text_log.clear();  //clear text_log
   }
-  else if ((words.length==3)&&(words[0].equals("record")))  //if record plus two other words
+  else if ((words.length==3)&&(words[0].equals("record"))&&(record_image==0)&&(record_vectors==0)&&(record_points==0))  //if record plus two other words
   {
     if(words[1].equals("image"))  //if recording image
     {
       file=createWriter(words[2]);  //open file name of third word
-      record=1;  //we are recording
+      record_image=1;  //we are recording
       text_log.add("recording image to file: "+words[2]); 
+    }
+    if(words[1].equals("vectors"))
+    {
+      file=createWriter(words[2]);
+      record_vectors=1;
+      text_log.add("recording vectors to file: "+words[2]); 
+    }
+    if(words[1].equals("points"))
+    {
+      file=createWriter(words[2]);
+      record_points=1;
+      text_log.add("recording points to file: "+words[2]); 
     }
   }
   else if(theText.equals("stop")||(theText.equals("stop record")))  //stop recording
   {
-    if(record==1)
+    if((record_image==1)||(record_vectors==1)||(record_points==1))
     {
       file.flush();  //flush file
       file.close();  //close file
-      record=0;      //stop record
+      record_image=0;      //stop record
+      record_vectors=0;
+      record_points=0;
       text_log.add("finished recording to file"); 
     }  
   }
